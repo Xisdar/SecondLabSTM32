@@ -21,7 +21,10 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "stdio.h"
+#include "string.h"
+#include "stdlib.h"
+#include "ctype.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -31,7 +34,10 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define NUM_LED 4
+#define Shift_Amount 1
+#define RxBuf_SIZE 16
+#define TxBuf_SIZE 128
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -45,7 +51,30 @@ DMA_HandleTypeDef hdma_usart2_rx;
 DMA_HandleTypeDef hdma_usart2_tx;
 
 /* USER CODE BEGIN PV */
+struct Stored_LEDs
+{
+    uint8_t LEDArray1:NUM_LED;
+	uint8_t ModeLED1:1;
+    uint8_t RefreshRateLED;
+} SLED;
 
+struct State_User_Buttons
+{
+	uint8_t stateUB1:2;
+	uint8_t flagUB1:1;
+} SUB;
+
+// Массив поддерживаемых команд и соответствующих текстов ошибок.
+const char *commands[] = { "f="};
+const char *errorMessages[] = {
+    "Invalid command format. Command should be in the format 'F=x.x' with x in the range 0.1 to 9.9 Hz.\n"
+};
+const char *completedMessages[] = {
+	"LED updates frequently: f=%.2f Hz\n"
+};
+uint8_t TxBuf[TxBuf_SIZE];
+uint8_t RxBuf[RxBuf_SIZE];
+uint8_t UARTTXState = 1;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -59,6 +88,39 @@ static void MX_USART2_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+// Функция для выполнения кольцевого сдвига битов влево и возвращения числа
+void circularLeftShiftLEDByte(struct Stored_LEDs* SLED) {
+    SLED->LEDArray1 = (SLED->LEDArray1 << Shift_Amount) | (SLED->LEDArray1 >> (4 - Shift_Amount));
+}
+
+// Функция для извлечения определенного бита из поля x
+uint8_t getLEDByte(struct Stored_LEDs* SLED, uint8_t bitIndex) {
+    return (SLED->LEDArray1 >> bitIndex) & 1;
+}
+
+void ToggleLEDByte(struct Stored_LEDs* SLED)
+{
+	HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, getLEDByte(SLED, 3));
+	HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, getLEDByte(SLED, 2));
+	HAL_GPIO_WritePin(LED3_GPIO_Port, LED3_Pin, getLEDByte(SLED, 1));
+	HAL_GPIO_WritePin(LED4_GPIO_Port, LED4_Pin, getLEDByte(SLED, 0));
+}
+
+void TaskManager(struct State_User_Buttons* SUB, struct Stored_LEDs* SLED) {
+    static int counter = 0;
+    counter++;
+    if(SUB->flagUB1 == 1){
+    	SLED->ModeLED1 ^= 1;
+    	SLED->ModeLED1?(SLED->LEDArray1 = 8):(SLED->LEDArray1 = 10);
+    	counter = SLED->RefreshRateLED;
+    	SUB->flagUB1 = 0;
+    }
+    if (counter >= SLED->RefreshRateLED){
+    	circularLeftShiftLEDByte(SLED);
+    	ToggleLEDByte(SLED);
+        counter = 0;
+    }
+}
 
 /* USER CODE END 0 */
 
@@ -93,7 +155,10 @@ int main(void)
   MX_DMA_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
-
+  HAL_UARTEx_ReceiveToIdle_DMA(&huart2, (uint8_t *) RxBuf, RxBuf_SIZE);
+  __HAL_DMA_DISABLE_IT(&hdma_usart2_rx, DMA_IT_HT);
+  SLED.RefreshRateLED = 10;
+  SLED.LEDArray1 = 10;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -103,6 +168,8 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+	TaskManager(&SUB,&SLED);
+	HAL_Delay(100);
   }
   /* USER CODE END 3 */
 }
@@ -248,7 +315,98 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void Press_Fixation_UB1(struct State_User_Buttons* SUB){
+	if((SUB->stateUB1 & 0x2) != 0){
+		SUB->flagUB1 = 1;
+		SUB->stateUB1 = 0;
+	}
+}
 
+void Button_status_change(struct State_User_Buttons* SUB, uint16_t GPIO_Pin){
+	uint8_t State = !(HAL_GPIO_ReadPin(BTN1_GPIO_Port, GPIO_Pin));
+	SUB->stateUB1 =  SUB->stateUB1 << 1;
+	if(State) SUB->stateUB1 |= (State);
+	else SUB->stateUB1 &= ~(State);
+}
+
+// Функция обратного вызова обработки прерывания EXTI External Interrupt
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+	switch (GPIO_Pin) {
+		case BTN1_Pin: {
+			Button_status_change(&SUB, GPIO_Pin);
+			Press_Fixation_UB1(&SUB);
+		} break;
+		default: break;
+	}
+}
+
+/* Функцию UART TX --------------------------------------------------------------*/
+void UART_TX_Triger(char *strTx){
+    if (strlen(strTx) != 0) {
+        HAL_UART_Transmit_DMA(&huart2, (uint8_t*)strTx, strlen(strTx));
+    }
+}
+
+void String_Comp(char *strRx, char *strTx, struct Stored_LEDs* SLED) {
+	int commandIndex = -1;
+
+    // Преобразуйте все символы входной строки в нижний регистр для нечувствительности к регистру.
+    for (int i = 0; strRx[i]; i++) {
+        strRx[i] = tolower(strRx[i]);
+    }
+
+    size_t numCommands = sizeof(commands) / sizeof(commands[0]);
+
+    // Найдите индекс соответствующей команды.
+    for (size_t i = 0; i < numCommands; i++) {
+        if (strncmp(strRx, commands[i], strlen(commands[i])) == 0) {
+            commandIndex = i;
+            break;
+        }
+    }
+
+    // Обработка команд на основе найденного индекса.
+    switch (commandIndex) {
+    	case 0:{
+        	char *endPtr;
+        	double frequency = strtod(strRx + 2, &endPtr);
+        	if (endPtr != strRx + 2 && frequency >= 0.1 && frequency <= 9.9) {
+        		SLED->RefreshRateLED = (uint8_t)(frequency*10);
+        		sprintf(strTx, completedMessages[commandIndex], frequency);
+            return;
+            } else strcat(strTx, errorMessages[commandIndex]);
+        } break;
+
+        default:
+            // Выведите текст ошибки, если ни одна из команд не совпала.
+        	strcat(strTx, "Invalid command. Supported commands: 'F=x.x'\n");
+        break;
+    }
+}
+
+/* Функцию обратного вызова UART RX IDLE ------------------------------------------*/
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
+{
+	if (huart->Instance == USART2)
+	{
+		String_Comp((char*)RxBuf,(char*)TxBuf,&SLED);
+		UART_TX_Triger((char*)TxBuf);
+		memset (RxBuf, 0, RxBuf_SIZE);
+		HAL_UARTEx_ReceiveToIdle_DMA(&huart2, (uint8_t *) RxBuf, RxBuf_SIZE);
+		__HAL_DMA_DISABLE_IT(&hdma_usart2_rx, DMA_IT_HT);
+	}
+}
+
+/* Функцию обратного вызова UART TX --------------------------------------------*/
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+	if (huart->Instance == USART2){
+		if(HAL_UART_GetState (&huart2) != HAL_UART_STATE_BUSY_TX){
+			memset (TxBuf, 0, TxBuf_SIZE);
+		}
+	}
+}
 /* USER CODE END 4 */
 
 /**
