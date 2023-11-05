@@ -38,6 +38,7 @@
 #define Shift_Amount 1
 #define RxBuf_SIZE 16
 #define TxBuf_SIZE 128
+#define MAX_TASKS 2
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -64,6 +65,12 @@ struct State_User_Buttons
 	uint8_t flagUB1:1;
 } SUB;
 
+typedef struct {
+    void (*taskFunction)(void);  // Указатель на функцию, которую нужно выполнить.
+    uint32_t period;             // Период выполнения задачи (в миллисекундах).
+    uint32_t lastExecutionTime;  // Время последнего выполнения задачи (в миллисекундах).
+} Task;
+
 // Массив поддерживаемых команд и соответствующих текстов ошибок.
 const char *commands[] = { "f="};
 const char *errorMessages[] = {
@@ -74,7 +81,7 @@ const char *completedMessages[] = {
 };
 uint8_t TxBuf[TxBuf_SIZE];
 uint8_t RxBuf[RxBuf_SIZE];
-uint8_t UARTTXState = 1;
+Task tasks[MAX_TASKS];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -106,19 +113,28 @@ void ToggleLEDByte(struct Stored_LEDs* SLED)
 	HAL_GPIO_WritePin(LED4_GPIO_Port, LED4_Pin, getLEDByte(SLED, 0));
 }
 
-void TaskManager(struct State_User_Buttons* SUB, struct Stored_LEDs* SLED) {
-    static int counter = 0;
-    counter++;
-    if(SUB->flagUB1 == 1){
-    	SLED->ModeLED1 ^= 1;
-    	SLED->ModeLED1?(SLED->LEDArray1 = 8):(SLED->LEDArray1 = 10);
-    	counter = SLED->RefreshRateLED;
-    	SUB->flagUB1 = 0;
+void task1Function(void) {
+	circularLeftShiftLEDByte(&SLED);
+	ToggleLEDByte(&SLED);
+}
+
+void task2Function(void) {
+    if(SUB.flagUB1 == 1){
+    	SLED.ModeLED1 ^= 1;
+    	SLED.ModeLED1?(SLED.LEDArray1 = 8):(SLED.LEDArray1 = 10);
+    	SUB.flagUB1 = 0;
+    	task1Function();
     }
-    if (counter >= SLED->RefreshRateLED){
-    	circularLeftShiftLEDByte(SLED);
-    	ToggleLEDByte(SLED);
-        counter = 0;
+}
+
+void TaskScheduler(Task* tasks, int numTasks) {
+    while (1) {
+        for (int i = 0; i < numTasks; i++) {
+            if (HAL_GetTick() - tasks[i].lastExecutionTime >= tasks[i].period) {
+                tasks[i].taskFunction();  // Выполнить задачу.
+                tasks[i].lastExecutionTime = HAL_GetTick();  // Обновить время последнего выполнения.
+            }
+        }
     }
 }
 
@@ -159,7 +175,20 @@ int main(void)
   __HAL_DMA_DISABLE_IT(&hdma_usart2_rx, DMA_IT_HT);
   SLED.RefreshRateLED = 10;
   SLED.LEDArray1 = 10;
+
+  // Инициализация микроконтроллера и других компонентов.
+  tasks[0].taskFunction = task1Function;
+  tasks[0].period = 1000;
+  tasks[0].lastExecutionTime = HAL_GetTick();
+
+  tasks[1].taskFunction = task2Function;
+  tasks[1].period = 500;
+  tasks[1].lastExecutionTime = HAL_GetTick();
+
+  // Запустить диспетчер задач.
+  TaskScheduler(tasks, 2);
   /* USER CODE END 2 */
+
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
@@ -168,8 +197,6 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	TaskManager(&SUB,&SLED);
-	HAL_Delay(100);
   }
   /* USER CODE END 3 */
 }
@@ -372,7 +399,7 @@ void String_Comp(char *strRx, char *strTx, struct Stored_LEDs* SLED) {
         	char *endPtr;
         	double frequency = strtod(strRx + 2, &endPtr);
         	if (endPtr != strRx + 2 && frequency >= 0.1 && frequency <= 9.9) {
-        		SLED->RefreshRateLED = (uint8_t)(frequency*10);
+        		tasks[0].period = (uint16_t)(frequency*1000);
         		sprintf(strTx, completedMessages[commandIndex], frequency);
             return;
             } else strcat(strTx, errorMessages[commandIndex]);
