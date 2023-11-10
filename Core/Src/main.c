@@ -38,7 +38,7 @@
 #define Shift_Amount 1
 #define RxBuf_SIZE 16
 #define TxBuf_SIZE 128
-#define MAX_TASKS 2
+#define MAX_TASKS 3
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -56,7 +56,6 @@ struct Stored_LEDs
 {
     uint8_t LEDArray1:NUM_LED;
 	uint8_t ModeLED1:1;
-    uint8_t RefreshRateLED;
 } SLED;
 
 struct State_User_Buttons
@@ -113,6 +112,43 @@ void ToggleLEDByte(struct Stored_LEDs* SLED)
 	HAL_GPIO_WritePin(LED4_GPIO_Port, LED4_Pin, getLEDByte(SLED, 0));
 }
 
+void String_Comp(char *strRx, char *strTx, struct Stored_LEDs* SLED) {
+	int commandIndex = -1;
+
+    // Преобразуйте все символы входной строки в нижний регистр для нечувствительности к регистру.
+    for (int i = 0; strRx[i]; i++) {
+        strRx[i] = tolower(strRx[i]);
+    }
+
+    size_t numCommands = sizeof(commands) / sizeof(commands[0]);
+
+    // Найдите индекс соответствующей команды.
+    for (size_t i = 0; i < numCommands; i++) {
+        if (strncmp(strRx, commands[i], strlen(commands[i])) == 0) {
+            commandIndex = i;
+            break;
+        }
+    }
+
+    // Обработка команд на основе найденного индекса.
+    switch (commandIndex) {
+    	case 0:{
+        	char *endPtr;
+        	float frequency = strtod(strRx + 2, &endPtr);
+        	if (endPtr != strRx + 2 && frequency >= 0.1 && frequency <= 9.9) {
+        		tasks[0].period = (uint16_t)(1/frequency*1000);
+        		sprintf(strTx, completedMessages[commandIndex], frequency);
+            return;
+            } else strcat(strTx, errorMessages[commandIndex]);
+        } break;
+
+        default:
+            // Выведите текст ошибки, если ни одна из команд не совпала.
+        	strcat(strTx, "Invalid command. Supported commands: 'F=x.x'\n");
+        break;
+    }
+}
+
 void task1Function(void) {
 	circularLeftShiftLEDByte(&SLED);
 	ToggleLEDByte(&SLED);
@@ -121,9 +157,18 @@ void task1Function(void) {
 void task2Function(void) {
     if(SUB.flagUB1 == 1){
     	SLED.ModeLED1 ^= 1;
-    	SLED.ModeLED1?(SLED.LEDArray1 = 8):(SLED.LEDArray1 = 10);
+    	SLED.ModeLED1?(SLED.LEDArray1 = 9):(SLED.LEDArray1 = 10);
     	SUB.flagUB1 = 0;
     	task1Function();
+    }
+}
+
+/* Функцию UART TX --------------------------------------------------------------*/
+void task3Function(void){
+    if (strlen((char*)RxBuf) != 0) {
+		String_Comp((char*)RxBuf,(char*)TxBuf,&SLED);
+		HAL_UART_Transmit_DMA(&huart2, (uint8_t*)TxBuf, strlen((char*)TxBuf));
+		memset (RxBuf, 0, RxBuf_SIZE);
     }
 }
 
@@ -173,7 +218,6 @@ int main(void)
   /* USER CODE BEGIN 2 */
   HAL_UARTEx_ReceiveToIdle_DMA(&huart2, (uint8_t *) RxBuf, RxBuf_SIZE);
   __HAL_DMA_DISABLE_IT(&hdma_usart2_rx, DMA_IT_HT);
-  SLED.RefreshRateLED = 10;
   SLED.LEDArray1 = 10;
 
   // Инициализация микроконтроллера и других компонентов.
@@ -185,8 +229,12 @@ int main(void)
   tasks[1].period = 500;
   tasks[1].lastExecutionTime = HAL_GetTick();
 
+  tasks[2].taskFunction = task3Function;
+  tasks[2].period = 100;
+  tasks[2].lastExecutionTime = HAL_GetTick();
+
   // Запустить диспетчер задач.
-  TaskScheduler(tasks, 2);
+  TaskScheduler(tasks, 3);
   /* USER CODE END 2 */
 
 
@@ -368,58 +416,11 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 	}
 }
 
-/* Функцию UART TX --------------------------------------------------------------*/
-void UART_TX_Triger(char *strTx){
-    if (strlen(strTx) != 0) {
-        HAL_UART_Transmit_DMA(&huart2, (uint8_t*)strTx, strlen(strTx));
-    }
-}
-
-void String_Comp(char *strRx, char *strTx, struct Stored_LEDs* SLED) {
-	int commandIndex = -1;
-
-    // Преобразуйте все символы входной строки в нижний регистр для нечувствительности к регистру.
-    for (int i = 0; strRx[i]; i++) {
-        strRx[i] = tolower(strRx[i]);
-    }
-
-    size_t numCommands = sizeof(commands) / sizeof(commands[0]);
-
-    // Найдите индекс соответствующей команды.
-    for (size_t i = 0; i < numCommands; i++) {
-        if (strncmp(strRx, commands[i], strlen(commands[i])) == 0) {
-            commandIndex = i;
-            break;
-        }
-    }
-
-    // Обработка команд на основе найденного индекса.
-    switch (commandIndex) {
-    	case 0:{
-        	char *endPtr;
-        	double frequency = strtod(strRx + 2, &endPtr);
-        	if (endPtr != strRx + 2 && frequency >= 0.1 && frequency <= 9.9) {
-        		tasks[0].period = (uint16_t)(frequency*1000);
-        		sprintf(strTx, completedMessages[commandIndex], frequency);
-            return;
-            } else strcat(strTx, errorMessages[commandIndex]);
-        } break;
-
-        default:
-            // Выведите текст ошибки, если ни одна из команд не совпала.
-        	strcat(strTx, "Invalid command. Supported commands: 'F=x.x'\n");
-        break;
-    }
-}
-
 /* Функцию обратного вызова UART RX IDLE ------------------------------------------*/
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 {
 	if (huart->Instance == USART2)
 	{
-		String_Comp((char*)RxBuf,(char*)TxBuf,&SLED);
-		UART_TX_Triger((char*)TxBuf);
-		memset (RxBuf, 0, RxBuf_SIZE);
 		HAL_UARTEx_ReceiveToIdle_DMA(&huart2, (uint8_t *) RxBuf, RxBuf_SIZE);
 		__HAL_DMA_DISABLE_IT(&hdma_usart2_rx, DMA_IT_HT);
 	}
