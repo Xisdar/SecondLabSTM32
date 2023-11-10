@@ -25,6 +25,7 @@
 #include "string.h"
 #include "stdlib.h"
 #include "ctype.h"
+#include "scheduler.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -64,12 +65,6 @@ struct State_User_Buttons
 	uint8_t flagUB1:1;
 } SUB;
 
-typedef struct {
-    void (*taskFunction)(void);  // Указатель на функцию, которую нужно выполнить.
-    uint32_t period;             // Период выполнения задачи (в миллисекундах).
-    uint32_t lastExecutionTime;  // Время последнего выполнения задачи (в миллисекундах).
-} Task;
-
 // Массив поддерживаемых команд и соответствующих текстов ошибок.
 const char *commands[] = { "f="};
 const char *errorMessages[] = {
@@ -80,7 +75,6 @@ const char *completedMessages[] = {
 };
 uint8_t TxBuf[TxBuf_SIZE];
 uint8_t RxBuf[RxBuf_SIZE];
-Task tasks[MAX_TASKS];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -89,7 +83,9 @@ static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN PFP */
-
+void Task1(void);
+void Task2(void);
+void Task3(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -136,7 +132,7 @@ void String_Comp(char *strRx, char *strTx, struct Stored_LEDs* SLED) {
         	char *endPtr;
         	float frequency = strtod(strRx + 2, &endPtr);
         	if (endPtr != strRx + 2 && frequency >= 0.1 && frequency <= 9.9) {
-        		tasks[0].period = (uint16_t)(1/frequency*1000);
+        		SetTimerTask(Task1, (uint32_t)(1/frequency*1000));
         		sprintf(strTx, completedMessages[commandIndex], frequency);
             return;
             } else strcat(strTx, errorMessages[commandIndex]);
@@ -149,22 +145,22 @@ void String_Comp(char *strRx, char *strTx, struct Stored_LEDs* SLED) {
     }
 }
 
-void task1Function(void) {
+void Task1(void) {
 	circularLeftShiftLEDByte(&SLED);
 	ToggleLEDByte(&SLED);
 }
 
-void task2Function(void) {
+void Task2(void) {
     if(SUB.flagUB1 == 1){
     	SLED.ModeLED1 ^= 1;
     	SLED.ModeLED1?(SLED.LEDArray1 = 9):(SLED.LEDArray1 = 10);
     	SUB.flagUB1 = 0;
-    	task1Function();
+    	Task1();
     }
 }
 
 /* Функцию UART TX --------------------------------------------------------------*/
-void task3Function(void){
+void Task3(void){
     if (strlen((char*)RxBuf) != 0) {
 		String_Comp((char*)RxBuf,(char*)TxBuf,&SLED);
 		HAL_UART_Transmit_DMA(&huart2, (uint8_t*)TxBuf, strlen((char*)TxBuf));
@@ -172,16 +168,6 @@ void task3Function(void){
     }
 }
 
-void TaskScheduler(Task* tasks, int numTasks) {
-    while (1) {
-        for (int i = 0; i < numTasks; i++) {
-            if (HAL_GetTick() - tasks[i].lastExecutionTime >= tasks[i].period) {
-                tasks[i].taskFunction();  // Выполнить задачу.
-                tasks[i].lastExecutionTime = HAL_GetTick();  // Обновить время последнего выполнения.
-            }
-        }
-    }
-}
 
 /* USER CODE END 0 */
 
@@ -192,7 +178,8 @@ void TaskScheduler(Task* tasks, int numTasks) {
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-
+  // Инициализация диспетчера задач
+  InitScheduler();
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -219,22 +206,10 @@ int main(void)
   HAL_UARTEx_ReceiveToIdle_DMA(&huart2, (uint8_t *) RxBuf, RxBuf_SIZE);
   __HAL_DMA_DISABLE_IT(&hdma_usart2_rx, DMA_IT_HT);
   SLED.LEDArray1 = 10;
-
-  // Инициализация микроконтроллера и других компонентов.
-  tasks[0].taskFunction = task1Function;
-  tasks[0].period = 1000;
-  tasks[0].lastExecutionTime = HAL_GetTick();
-
-  tasks[1].taskFunction = task2Function;
-  tasks[1].period = 500;
-  tasks[1].lastExecutionTime = HAL_GetTick();
-
-  tasks[2].taskFunction = task3Function;
-  tasks[2].period = 100;
-  tasks[2].lastExecutionTime = HAL_GetTick();
-
-  // Запустить диспетчер задач.
-  TaskScheduler(tasks, 3);
+  // Установка таймеров для циклического выполнения задач
+  SetTimerTask(Task1, 1000); // Задача 1 каждую секунду
+  SetTimerTask(Task2, 500); // Задача 2 каждую секунду
+  SetTimerTask(Task3, 100); // Задача 3 каждую секунду
   /* USER CODE END 2 */
 
 
@@ -245,6 +220,10 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    // Вызовите диспетчер задач
+    TaskManager();
+    // Вызовите службу таймера (лучше вызывать из прерывания таймера)
+    TimerService();
   }
   /* USER CODE END 3 */
 }
