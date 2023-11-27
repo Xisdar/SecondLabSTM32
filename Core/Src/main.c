@@ -57,6 +57,7 @@ struct Stored_LEDs
 {
     uint8_t LEDArray1:NUM_LED;
 	uint8_t ModeLED1:1;
+	uint16_t RefreshRateLED;
 } SLED;
 
 struct State_User_Buttons
@@ -132,7 +133,7 @@ void String_Comp(char *strRx, char *strTx, struct Stored_LEDs* SLED) {
         	char *endPtr;
         	float frequency = strtod(strRx + 2, &endPtr);
         	if (endPtr != strRx + 2 && frequency >= 0.1 && frequency <= 9.9) {
-        		SetTimerTask(Task1, (uint32_t)(1/frequency*1000));
+        		SLED->RefreshRateLED = (uint32_t)(1/frequency*1000);
         		sprintf(strTx, completedMessages[commandIndex], frequency);
             return;
             } else strcat(strTx, errorMessages[commandIndex]);
@@ -148,6 +149,7 @@ void String_Comp(char *strRx, char *strTx, struct Stored_LEDs* SLED) {
 void Task1(void) {
 	circularLeftShiftLEDByte(&SLED);
 	ToggleLEDByte(&SLED);
+	SetTimerTask(Task1, SLED.RefreshRateLED);
 }
 
 void Task2(void) {
@@ -157,6 +159,7 @@ void Task2(void) {
     	SUB.flagUB1 = 0;
     	Task1();
     }
+    SetTask(Task2);
 }
 
 /* Функцию UART TX --------------------------------------------------------------*/
@@ -166,8 +169,13 @@ void Task3(void){
 		HAL_UART_Transmit_DMA(&huart2, (uint8_t*)TxBuf, strlen((char*)TxBuf));
 		memset (RxBuf, 0, RxBuf_SIZE);
     }
+    SetTask(Task3);
 }
 
+void HAL_SYSTICK_Callback(void)
+{
+  TimerService(); // Timer service function
+}
 
 /* USER CODE END 0 */
 
@@ -178,7 +186,7 @@ void Task3(void){
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-  // Инициализация диспетчера задач
+  // �?нициализация диспетчера задач
   InitScheduler();
   /* USER CODE END 1 */
 
@@ -206,12 +214,12 @@ int main(void)
   HAL_UARTEx_ReceiveToIdle_DMA(&huart2, (uint8_t *) RxBuf, RxBuf_SIZE);
   __HAL_DMA_DISABLE_IT(&hdma_usart2_rx, DMA_IT_HT);
   SLED.LEDArray1 = 10;
+  SLED.RefreshRateLED = 1000;
   // Установка таймеров для циклического выполнения задач
-  SetTimerTask(Task1, 1000); // Задача 1 каждую секунду
-  SetTimerTask(Task2, 500); // Задача 2 каждую секунду
-  SetTimerTask(Task3, 100); // Задача 3 каждую секунду
+  SetTimerTask(Task1, SLED.RefreshRateLED); // Задача 1 каждую секунду
+  SetTask(Task2); // Задача 2
+  SetTask(Task3); // Задача 3
   /* USER CODE END 2 */
-
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
@@ -220,10 +228,8 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    // Вызовите диспетчер задач
+    // Вызов диспетчера задач
     TaskManager();
-    // Вызовите службу таймера (лучше вызывать из прерывания таймера)
-    TimerService();
   }
   /* USER CODE END 3 */
 }
